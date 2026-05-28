@@ -2099,3 +2099,141 @@ done:
   if (out_len) *out_len = strlen(out);
   return out;
 }
+
+/*---------------------------------------------------------------------------------------------------------
+Name: build_pay_pending_info_response_json
+Description: Builds a JSON response containing all voter payout balances
+  where pending_atomic > 0.
+
+Return:
+  Dynamically allocated JSON string.
+  Caller must free() the returned buffer.
+
+Parameters:
+  out_len - receives length of returned JSON string
+---------------------------------------------------------------------------------------------------------*/
+char* build_pay_pending_info_response_json(size_t* out_len)
+{
+  if (out_len) *out_len = 0;
+
+  mongoc_client_t* client = mongoc_client_pool_pop(database_client_thread_pool);
+  if (!client) return NULL;
+
+  mongoc_collection_t* col =
+    mongoc_client_get_collection(client, DATABASE_NAME, "payout_balances");
+
+  if (!col) {
+    mongoc_client_pool_push(database_client_thread_pool, client);
+    return NULL;
+  }
+
+  cJSON* root = cJSON_CreateObject();
+
+  cJSON_AddStringToObject(root, "message_settings", "NODES_TO_NODES_PENDING_PAYOUTS");
+  cJSON_AddStringToObject(root, "status", "success");
+
+  cJSON* arr = cJSON_CreateArray();
+  cJSON_AddItemToObject(root, "pending_payouts", arr);
+
+  // filter: { pending_atomic: { $gt: 0 } }
+  bson_t filter;
+  bson_init(&filter);
+
+  bson_t pending_doc;
+  BSON_APPEND_DOCUMENT_BEGIN(&filter, "pending_atomic", &pending_doc);
+  BSON_APPEND_INT64(&pending_doc, "$gt", 0);
+  bson_append_document_end(&filter, &pending_doc);
+
+  // sort newest first
+  bson_t opts;
+  bson_init(&opts);
+
+  bson_t sort_doc;
+  BSON_APPEND_DOCUMENT_BEGIN(&opts, "sort", &sort_doc);
+  BSON_APPEND_INT32(&sort_doc, "updated_at", -1);
+  bson_append_document_end(&opts, &sort_doc);
+
+  mongoc_cursor_t* cursor =
+    mongoc_collection_find_with_opts(col, &filter, &opts, NULL);
+
+  if (!cursor) {
+    cJSON_ReplaceItemInObject(root, "status", cJSON_CreateString("error"));
+    cJSON_AddStringToObject(root, "message", "query failed");
+    goto done;
+  }
+
+  const bson_t* doc = NULL;
+  int count = 0;
+
+  while (mongoc_cursor_next(cursor, &doc)) {
+
+    bson_iter_t it;
+
+    const char* address = NULL;
+    int64_t pending_atomic = 0;
+    int64_t updated_at_ms = 0;
+
+    // _id (wallet address)
+    if (bson_iter_init_find(&it, doc, "_id") &&
+        BSON_ITER_HOLDS_UTF8(&it)) {
+      address = bson_iter_utf8(&it, NULL);
+    }
+
+    // pending_atomic
+    if (bson_iter_init_find(&it, doc, "pending_atomic")) {
+      if (BSON_ITER_HOLDS_INT64(&it))
+        pending_atomic = bson_iter_int64(&it);
+      else if (BSON_ITER_HOLDS_INT32(&it))
+        pending_atomic = (int64_t)bson_iter_int32(&it);
+    }
+
+    // updated_at
+    if (bson_iter_init_find(&it, doc, "updated_at") &&
+        BSON_ITER_HOLDS_DATE_TIME(&it)) {
+      updated_at_ms = bson_iter_date_time(&it);
+    }
+
+    cJSON* item = cJSON_CreateObject();
+
+    if (address)
+      cJSON_AddStringToObject(item, "_id", address);
+
+    // safe for JS/UI
+    char pending_buf[32];
+    i64_to_str(pending_atomic, pending_buf, sizeof pending_buf);
+
+    cJSON_AddStringToObject(item, "pending_atomic", pending_buf);
+
+    if (updated_at_ms > 0) {
+      char ts[32];
+      iso8601_from_ms_utc(updated_at_ms, ts, sizeof ts);
+      cJSON_AddStringToObject(item, "updated_at", ts);
+    }
+
+    cJSON_AddItemToArray(arr, item);
+    count++;
+  }
+
+  cJSON_AddNumberToObject(root, "count", count);
+
+  mongoc_cursor_destroy(cursor);
+
+done:
+
+  bson_destroy(&filter);
+  bson_destroy(&opts);
+
+  mongoc_collection_destroy(col);
+  mongoc_client_pool_push(database_client_thread_pool, client);
+
+  char* out = cJSON_PrintUnformatted(root);
+
+  cJSON_Delete(root);
+
+  if (!out) return NULL;
+
+  if (out_len)
+    *out_len = strlen(out);
+
+  return out;
+}

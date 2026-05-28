@@ -431,3 +431,50 @@ void server_receive_payout_info(server_client_t* client, const char* MESSAGE)
   send_data(client, (const unsigned char*)response_json, out_len);
   free(response_json);
 }
+
+/*---------------------------------------------------------------------------------------------------------
+Name: server_receive_pay_pending_info
+Description: Runs the code when the server receives the SEED_TO_NODES_PAY_PENDING_INFO message.
+  This function validates the request, then queries the payout_balances collection and returns
+  any records that have a balnace bigger than zero.
+Parameters:
+  client  - The connected client
+  MESSAGE - The message
+---------------------------------------------------------------------------------------------------------*/
+void server_receive_pay_pending_info(server_client_t* client, const char* MESSAGE)
+{
+  if (!MESSAGE || !*MESSAGE) {
+    SERVER_ERROR("0|Invalid message payload");
+  }
+
+  cJSON* root = cJSON_Parse(MESSAGE);
+  if (!root) {
+    SERVER_ERROR("0|Invalid JSON");
+  }
+
+  const cJSON* ms = cJSON_GetObjectItemCaseSensitive(root, "message_settings");
+  const char* message_settings =
+    (cJSON_IsString(ms) && ms->valuestring && *ms->valuestring) ? ms->valuestring : NULL;
+
+  if (!message_settings) {
+    cJSON_Delete(root);
+    SERVER_ERROR("0|Missing message_settings");
+  }
+
+  if (strcmp(message_settings, "NODES_TO_NODES_PAY_PENDING_INFO") != 0) {
+    cJSON_Delete(root);
+    SERVER_ERROR("0|Invalid message_settings");
+  }
+
+  cJSON_Delete(root);
+
+  size_t out_len = 0;
+  char* response_json = build_pay_pending_info_response_json(&out_len);
+  if (!response_json || out_len <= 0) {
+    if (response_json) free(response_json);
+    SERVER_ERROR("0|Failed to build response");
+  }
+
+  send_data(client, (const unsigned char*)response_json, out_len);
+  free(response_json);
+}

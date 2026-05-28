@@ -19,5 +19,6 @@
 void server_receive_payout(const char *MESSAGE);
 void server_receive_update_delegate_vote_count(const char* MESSAGE);
 void server_receive_payout_info(server_client_t* client, const char* MESSAGE);
+void server_receive_pay_pending_info(server_client_t* client, const char* MESSAGE);
 
 #endif
